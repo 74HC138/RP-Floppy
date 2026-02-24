@@ -1,0 +1,73 @@
+.program datarateDetector
+;expects floppy data on pin 0
+;expects floppy data on EXECCTRL_JMP_PIN
+;outputs timing data on RX FIFO at 2 clocks per tick
+;sets IRQ 0 on timeout condition
+
+.origin init
+
+init:
+    MOV X !NULL
+    ;wait for the beginning of data edge
+    WAIT 0 pin 0
+    WAIT 1 pin 0
+loopHigh:
+    JMP X-- loopBackHigh
+    ;if execution gets here then timeout
+    ;cause interrupt and stop execution
+    JMP timeout
+
+loopBackHigh:
+    JMP PIN loopHigh
+    ;low transistion of clock
+    ;count till transition to high
+loopLow:
+    JMP PIN pushData
+    JMP X-- loopLow
+    ;if execution gets here then timeout
+    ;cause interrupt and stop execution
+timeout:
+    IRQ wait 0
+    JMP init
+
+pushData:
+    MOV X !X
+    IN X, 32
+    PUSH block
+    JMP init
+
+% c-sdk {
+#include <hardware/timer.h>
+static inline void datarateDetector_program_init(PIO pio, int dataPin) {
+    pio_add_program(pio, &datarateDetector_program);
+    pio_gpio_init(pio, dataPin);
+    pio_sm_set_consecutive_pindirs(pio, 0, dataPin, 1, false);
+    pio_sm_config c = datarateDetector_program_get_default_config(0);
+    sm_config_set_in_pins(&c, dataPin);
+    sm_config_set_in_pin_count(&c, 1);
+    sm_config_set_jmp_pin(&c, dataPin);
+    sm_config_set_clkdiv(&c, 1);
+    pio_sm_init(pio, 0, 0, &c);
+    pio_sm_clear_fifos(pio, 0);
+    pio_sm_set_enabled(pio, 0, true);
+    //PIO should start to spew out data very quick now...
+}
+static inline void datarateDetector_program_exit(PIO pio) {
+    pio_sm_set_enabled(pio, 0, false);
+    pio_sm_unclaim(pio, 0);
+}
+//gets a value from the FIFO
+//exits if timeout is reached with true
+//otherwise sets destination to FIFO value and returns with false
+static bool datarateDetector_pull(PIO pio, uint32_t* destination, uint64_t timeout) {
+    if (destination == NULL) return false;
+    while (timeout > time_us_64()) {
+        if (pio_sm_get_rx_fifo_level(pio, 0) > 0) {
+            *destination = pio_sm_get(pio, 0);
+            return false;
+        }
+    }
+    return true;
+}
+%}
+
