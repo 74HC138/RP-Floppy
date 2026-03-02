@@ -1,0 +1,38 @@
+.program crudeSectorCount
+;tryes to detect the sector count on a track of floppy data
+;waits for first timeout (end of sector)
+;then counts how long to the next sector at (SYSCLOCK / TPC) / RATE
+;TX-FIFO:
+;   +0 RATE
+;RX-FIFO:
+;   +0 TIME
+
+.origin crudeSectorCountBegin:
+
+public crudeSectorCountBegin:
+    PULL noblock
+reset:
+    WAIT 1 pin 0
+    MOV X !NULL
+    MOV Y OSR
+
+waitTimeout:
+    JMP pin decrement
+    MOV X !NULL
+decrement:
+    JMP X-- endDecrement
+    ;no signal
+    JMP error
+endDecrement:
+    JMP X!=Y waitTimeout
+    ;timeout
+    
+
+
+
+
+
+timeout1:
+
+error:
+

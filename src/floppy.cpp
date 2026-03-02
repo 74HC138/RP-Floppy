@@ -288,19 +288,35 @@ int getDatarate(int driveIndex) {
         } else if (inArea) {
             Area lastArea = timingAreas.back();
             lastArea.end = i - 1;
-            lastArea.center = ((lastArea.end - lastArea.start) / 2) + lastArea.start;
+            int maxN = 0;
+            int maxI = 0;
+            for (int j = lastArea.start; j <= lastArea.end; j++) {
+                if (statisticBuffer[j] > maxN) {
+                    maxN = statisticBuffer[j];
+                    maxI = j;
+                }
+            }
+            lastArea.center = maxI;
             timingAreas.back() = lastArea;
             inArea = false;
         }
     }
+
     if (inArea) Serial.printf("statistics data ended to soon\n");
     Serial.printf("got %d areas\n", timingAreas.size());
     for (Area area : timingAreas) {
-        int dataRate = SYS_CLK_HZ / (area.center * 2);
-        Serial.printf("start: %d, end: %d, center: %d, rate: %d\n", area.start, area.end, area.center, dataRate);
+        int dataRate = SYS_CLK_HZ / area.center;
+        Serial.printf("start: %d, end: %d, center: %d\n", area.start, area.end, area.center);
     }
 
-
+    int avgDelta = 0;
+    for (int i = 0; i < timingAreas.size() - 1; i++) {
+        int deltaTick = timingAreas[i+1].center - timingAreas[i].center;
+        avgDelta += deltaTick;
+    }
+    avgDelta /= (timingAreas.size() - 1);
+    long rate = (SYS_CLK_HZ / 2) / avgDelta;
+    Serial.printf("implied rate: %ldbit/s\n", rate);
 
     return 0;
 }
@@ -312,10 +328,11 @@ int initFloppy() {
     if (startMotor(driveIndex) != 0) return -1;
     if (seek0(driveIndex) != 0) return -1;
     delay(1000);
-    stepTo(trackCount - 1, driveIndex);
-    stepTo(0, driveIndex);
 
-    getDatarate(driveIndex);
+    for (int i = 0; i < trackCount; i++) {
+        stepTo(i, driveIndex);
+        getDatarate(driveIndex);
+    }
 
     stopMotor(0);
     selectDrive(0);
