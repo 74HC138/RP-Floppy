@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <pico.h>
 #include "floppy.hpp"
@@ -23,4 +24,6 @@ void loop() {
     }
     while (!BOOTSEL);
     while (BOOTSEL);
+    //pio_set_irq0_source_enabled();
+    //pio_interrupt_clear()
 }

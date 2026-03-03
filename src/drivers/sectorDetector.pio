@@ -1,15 +1,15 @@
-.program crudeSectorCount
-;tryes to detect the sector count on a track of floppy data
-;waits for first timeout (end of sector)
-;then counts how long to the next sector at (SYSCLOCK / TPC) / RATE
-;TX-FIFO:
-;   +0 RATE
-;RX-FIFO:
-;   +0 TIME
+.program crudeSectorDetector
+;fires IRQ 0 every time a sector gap is detected (timeout is reached)
+;the timeout timebase if 1/3 of SYSCLK
+;expects the CPU to catch the interrupt and to measure the time in between interrupts to gauge sector length
+;also count sectors per revolution
 
-.origin crudeSectorCountBegin:
+.origin crudeSectorDetectorSM0
 
-public crudeSectorCountBegin:
+public crudeSectorDetectorSM0:
+    ;timeout detector
+    ;sends resets IRQ 0 when a timout happens (gap between sectors)
+    ;expects CPU to catch interrupt and measure time between interrrupts
     PULL noblock
 reset:
     WAIT 1 pin 0
@@ -26,13 +26,86 @@ decrement:
 endDecrement:
     JMP X!=Y waitTimeout
     ;timeout
-    
-
-
-
-
-
-timeout1:
+    IRQ set 0
+    MOV X !NULL
+    JMP reset
 
 error:
+    IRQ wait 1
+    JMP reset
 
+% c-sdk {
+#include <hardware/timer.h>
+volatile static int sectorCount = 0;
+volatile static uint64_t sectorTime_us = 0;
+volatile static uint64_t lastTimestamp = 0;
+volatile static bool errorState = false;
+
+static void sectorDetector_irqHandler() {
+    //gets called every time a sector gap is hit
+    pio_interrupt_clear(pio0, pis_interrupt0); //clear the interrupt
+    uint64_t timestamp = time_us_64(); //get current time is micro seconds
+    if (lastTimestamp == 0) {
+        //first time the irq is hit
+        lastTimestamp = timestamp;
+    } else {
+        uint64_t div = timestamp - lastTimestamp;
+        if (sectorTime_us == 0) {
+            //on first call set sector time to div value
+            sectorTime_us = div;
+        } else {
+            //on successive calls average time
+            sectorTime_us = (sectorTime_us + div) / 2;
+        }
+    }
+    sectorCount++;
+}
+static void sectorDetectir_errorHandler() {
+    //gets called when an underflow happens
+    errorState = true;
+    pio_interrupt_clear(pio0, pis_interrupt1); //clear the IRQ, the statemachine should continue, even tho it will most likely error again
+}
+static inline void sectorDetector_program_init(PIO pio, int dataPin, uint32_t timeout) {
+    //reset variables
+    sectorCount = 0;
+    sectorTime_us = 0;
+    lastTimestamp = 0;
+    errorState = false;
+    //claim the PIO
+    pio_sm_claim(pio0, 0);
+    //load program
+    pio_add_program(pio, &crudeSectorDetector_program);
+    //set input pins
+    pio_gpio_init(pio, dataPin);
+    pio_sm_set_consecutive_pindirs(pio, 0, dataPin, 1, false);
+    pio_sm_config c = crudeSectorDetector_program_get_default_config(0);
+    sm_config_set_in_pins(&c, dataPin);
+    sm_config_set_in_pin_count(&c, 1);
+    sm_config_set_jmp_pin(&c, dataPin);
+    //set clockrate
+    sm_config_set_clkdiv(&c, 1);
+    //initialize state machine and push timeout argument
+    pio_sm_init(pio, 0, crudeSectorDetector_offset_crudeSectorDetectorSM0, &c);
+    pio_sm_clear_fifos(pio, 0);
+    pio_sm_put(pio, 0, timeout);
+    //register interrupt handler
+    pio_set_irq0_source_enabled(pio0, pis_interrupt0, true); //enable interrupt 0 and 1 and target SM IRQ 0 and 1
+    pio_set_irq1_source_enabled(pio0, pis_interrupt1, true);
+    irq_set_exclusive_handler(PIO0_IRQ_0, sectorDetector_irqHandler); //set interrupt handler
+    irq_set_exclusive_handler(PIO0_IRQ_1, sectorDetectir_errorHandler); //set error handler
+    irq_set_enabled(PIO0_IRQ_0, true); //and enable the interrupt
+    //finaly start the state machine and let it ripp
+    pio_sm_set_enabled(pio, 0, true);
+}
+static inline void sectorDetector_program_exit(PIO pio) {
+    pio_sm_set_enabled(pio, 0, false);
+    pio_sm_unclaim(pio, 0);
+}
+static inline void sectorDetector_startMeasure() {
+    sectorCount = 0;
+}
+static inline void sectorDetector_endMeasure(uint32_t& count, uint64_t& time) {
+    count = sectorCount;
+    time = sectorTime_us;
+}
+%}
