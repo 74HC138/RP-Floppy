@@ -14,7 +14,7 @@ public crudeSectorDetectorSM0:
 reset:
     WAIT 1 pin 0
     MOV X !NULL
-    MOV Y OSR
+    MOV Y !OSR
 
 waitTimeout:
     JMP pin decrement

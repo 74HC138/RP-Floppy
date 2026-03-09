@@ -1,4 +1,4 @@
 #include <Arduino.h>
 
-int getDatarate(int driveIndex);
+long getDatarate(int driveIndex);
 int initFloppy();

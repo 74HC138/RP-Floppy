@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "datarateDetector.pio.h"
+#include "drivers/sectorDetector.pio.h"
 //--------------------
 //defines
 #define ASSERT true
@@ -235,7 +236,7 @@ int seek0(int driveIndex) {
 //configures timer to count sys clocks till rising edge of data pin
 //then store data in statistics table and figure out what the base clock is
 //the base clock is the first significant spike with a multiple on a spike
-int getDatarate(int driveIndex) {
+long getDatarate(int driveIndex) {
     //collect timing statistics
     std::array<int, 1024> statisticBuffer;
     for (int i = 0; i < statisticBuffer.size(); i++) statisticBuffer[i] = 0;
@@ -318,21 +319,87 @@ int getDatarate(int driveIndex) {
     long rate = (SYS_CLK_HZ / 2) / avgDelta;
     Serial.printf("implied rate: %ldbit/s\n", rate);
 
+    return rate;
+}
+//gets the spin rate of the disk using the index pulse
+//disk needs to be selected and motor has to be spinning prior to calling this function
+//returns the rpm or -1 on error
+float getRPM() {
+    uint64_t timeout = time_us_64() + (1000 * 1000); //1 second timeout, when no transition happens in that time then disk isnt spinning
+    //wait till the first propper rising edge
+    while(getPin(FD_Index)) {
+        if (time_us_64() >= timeout) return -1;
+    }
+    while(!getPin(FD_Index)) {
+        if (time_us_64() >= timeout) return -1;
+    }
+    //get the start time and wait till the next rising edge
+    uint64_t timeStart = time_us_64();
+    while(getPin(FD_Index));
+    while(!getPin(FD_Index));
+    //calculate the delta time and frome there the RPM
+    uint64_t timeStop = time_us_64();
+    uint64_t delta = timeStop - timeStart;
+    Serial.printf("delta spin time %lu us\n", delta);
+    float rpm = (float) 60.0f / ((float) delta / (1000 * 1000)); //delta is in us, adjust propperly
+    return rpm;
+}
+int getCrudeSectorInfo(int driveIndex, int& sectorsPerTrack, long& sectorLength, int sectorTimout) {
+    sectorDetector_program_init(pio0, FDPins[FD_ReadData].pinIndex, sectorTimout);
+    uint64_t timeout = time_us_64() + (1000 * 1000);
+    //wait for first propper rising edge. also timeout when no pulse is happening i.e. disk not spinning
+    while(getPin(FD_Index)) {
+        if (time_us_64() >= timeout) {
+            sectorDetector_program_exit(pio0);
+            return -1;
+        }
+    }
+    while(!getPin(FD_Index)) {
+        if (time_us_64() >= timeout) {
+            sectorDetector_program_exit(pio0);
+            return -1;
+        }
+    }
+    //start the measurement
+    sectorDetector_startMeasure();
+    //wait till the end of the next index edge
+    //makes sure to capture all sectors
+    while(getPin(FD_Index));
+    while(!getPin(FD_Index));
+    while(getPin(FD_Index));
+    //end measurement
+    uint32_t sectorCount = 0;
+    uint64_t sectorTime = 0;
+    sectorDetector_endMeasure(sectorCount, sectorTime);
+    sectorDetector_program_exit(pio0);
+    Serial.printf("counted %u sectors @ %lu us per sector\n", sectorCount, sectorTime);
+    sectorsPerTrack = sectorCount;
+    sectorLength = sectorTime;
     return 0;
 }
-
 
 int initFloppy() {
     initState();
     if (selectDrive(driveIndex) != 0) return -1;
     if (startMotor(driveIndex) != 0) return -1;
+
+
     if (seek0(driveIndex) != 0) return -1;
     delay(1000);
 
-    for (int i = 0; i < trackCount; i++) {
-        stepTo(i, driveIndex);
-        getDatarate(driveIndex);
+    float rpm = getRPM();
+    if (rpm < 0) {
+        Serial.printf("couldnt get the disk RPM, check wiring\n");
+        return -1;
+    } else {
+        Serial.printf("drive RPM spinrate is %.3fRPM\n", rpm);
     }
+    long rate = getDatarate(driveIndex);
+    int sectorCount = 0;
+    long sectorTime = 0;
+    long sectorSeperator = ((SYS_CLK_HZ / 3) / rate) * 2; //6 0 symbols in a row is illegal for MFM and should only happen between sectors
+    Serial.printf("sector seperator cycles: %ld\n", sectorSeperator);
+    getCrudeSectorInfo(driveIndex, sectorCount, sectorTime, sectorSeperator);
 
     stopMotor(0);
     selectDrive(0);
